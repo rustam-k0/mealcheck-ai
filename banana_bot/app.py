@@ -14,16 +14,15 @@ from aiohttp import web
 from dotenv import load_dotenv
 import redis.asyncio as redis
 
-from banana_bot.adapters.google import GoogleAdapter
-from banana_bot.adapters.openai import OpenAIAdapter
-from banana_bot.adapters.xai import XAIAdapter
+from banana_bot.adapters.unified import UnifiedAIAdapter
 from banana_bot.config import AppConfig, load_config
 from banana_bot.http import AsyncHTTPClient
 from banana_bot.memory import ConversationMemory
+from banana_bot.diary import SQLiteDiaryRepository, DiaryRepository
 from banana_bot.middleware import AccessAndMetricsMiddleware
 from banana_bot.observability import Metrics, log_event
 from banana_bot.routers import build_admin_router, build_common_router, build_media_router, build_text_router
-from banana_bot.services.ai import AIService
+from banana_bot.services.ai import FoodAnalysisService
 from banana_bot import __version__
 
 
@@ -41,12 +40,13 @@ async def start_health_server(port: int) -> web.AppRunner:
     return runner
 
 
-def build_dispatcher(config: AppConfig, ai: AIService, memory: ConversationMemory, metrics: Metrics, storage=None) -> Dispatcher:
+def build_dispatcher(config: AppConfig, ai: FoodAnalysisService, memory: ConversationMemory, metrics: Metrics, storage=None, diary: DiaryRepository | None = None) -> Dispatcher:
     dispatcher = Dispatcher(storage=storage or MemoryStorage())
     dispatcher.message.outer_middleware(AccessAndMetricsMiddleware(config.allowed_users, metrics))
     dispatcher.callback_query.outer_middleware(AccessAndMetricsMiddleware(config.allowed_users, metrics))
     dispatcher.include_router(build_admin_router(config, metrics))
-    dispatcher.include_router(build_common_router(memory))
+    repository = diary or ai.diary
+    dispatcher.include_router(build_common_router(config, memory, repository))
     dispatcher.include_router(build_text_router(ai))
     dispatcher.include_router(build_media_router(ai))
     return dispatcher
@@ -70,12 +70,11 @@ async def run(config: AppConfig) -> None:
     logging.basicConfig(level=getattr(logging, config.log_level, logging.INFO), format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     client = AsyncHTTPClient(config.request_timeout_seconds, config.connect_timeout_seconds, config.http_retries, config.rate_limit_per_minute)
-    adapters = {}
-    if config.openai_api_key: adapters["openai"] = OpenAIAdapter(client, config.openai_api_key)
-    if config.xai_api_key: adapters["xai"] = XAIAdapter(client, config.xai_api_key)
-    if config.google_api_key: adapters["google"] = GoogleAdapter(client, config.google_api_key)
     memory, metrics = ConversationMemory(config.memory_messages), Metrics()
-    ai = AIService(config, adapters, memory, metrics)
+    diary = SQLiteDiaryRepository(config.diary_db_path)
+    adapter = UnifiedAIAdapter(client, config.ai_api_key or "", config.ai_base_url, config.ai_provider)
+    transcription_adapter = UnifiedAIAdapter(client, config.transcription_api_key or config.ai_api_key or "", config.transcription_base_url or config.ai_base_url, config.ai_provider)
+    ai = FoodAnalysisService(config, adapter, diary, transcription_adapter)
     redis_client = None
     storage = MemoryStorage()
     if config.redis_url:
@@ -88,9 +87,9 @@ async def run(config: AppConfig) -> None:
         except Exception as exc:
             log_event("redis_unavailable", error_type=type(exc).__name__)
             await candidate.aclose()
-    dispatcher = build_dispatcher(config, ai, memory, metrics, storage)
+    dispatcher = build_dispatcher(config, ai, memory, metrics, storage, diary)
     bot = Bot(config.telegram_bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    log_event("startup", webhook=bool(config.webhook_url), providers=sorted(adapters))
+    log_event("startup", webhook=bool(config.webhook_url), provider=config.ai_provider)
     runner: web.AppRunner | None = None
     try:
         if config.webhook_url:

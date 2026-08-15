@@ -1,32 +1,18 @@
-# Banana Mate 🍌
+# Banana Mate — food photo diary 🍌
 
-**A friendly AI assistant that lives in Telegram.** Ask questions, send voice messages, translate text, understand files, and create or edit images—without teaching anyone a new app.
+A focused Telegram bot for approximate meal recognition from photos, text, and voice. It first shows editable foods and portions, calculates calories and protein/fat/carbohydrates only after explicit confirmation, and can save the confirmed result to a local diary.
 
-Banana Mate is an open-source starter for developers who want to give family, friends, or customers a simple AI experience inside a familiar messenger.
+## Product flow
 
-<p align="center">
-  <img src="assets/banana-mate-avatar.png" width="220" alt="Banana Mate avatar">
-</p>
+Send a photo directly—no menu step is required—or describe a meal in text/voice. Banana Mate extracts a structured composition, asks up to two important clarification questions, and offers **Correct / Confirm / Cancel**. Confirmation starts a second structured AI call for an approximate itemized nutrition result, uncertainty range, and reasons. Saving to the diary is a separate explicit action.
 
-## What people can do
+The bot does not diagnose, prescribe treatment or medical diets, moralize food, or support purging and extreme restriction. Photo estimates are inherently imprecise: exact weights, hidden oil, sauces, recipes, and cooking method can materially change the result.
 
-- ask everyday questions by text or voice;
-- get a deeper answer for harder tasks;
-- translate text and voice messages;
-- summarize and explain files;
-- create images or edit a photo;
-- listen to answers as Telegram voice messages;
-- start a fresh conversation at any time.
+## Setup
 
-The interface is available in Russian and English. Answers are short by default; **More** expands them when needed.
-
-## Fastest setup
-
-You need Python 3.11+, a Telegram bot token from [@BotFather](https://t.me/BotFather), and API access to at least one provider.
+Requires Python 3.11+, a Telegram bot token, and an OpenAI-compatible aggregator or private gateway:
 
 ```bash
-git clone https://github.com/rustam-k0/banana-bot.git
-cd banana-bot
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -34,106 +20,37 @@ cp .env.example .env
 python bot.py
 ```
 
-For the smallest working configuration, add these values to `.env`:
+The supplied example is configured for OpenCode Go using its OpenAI-compatible Chat Completions endpoint. Add your OpenCode Go key locally or as a deployment secret; never commit it:
 
 ```env
-TELEGRAM_BOT_TOKEN=your_telegram_token
-GOOGLE_API_KEY=your_google_key
+AI_API_KEY=your_opencode_go_key
+AI_BASE_URL=https://opencode.ai/zen/go/v1
+AI_PROVIDER=opencode-go
+AI_VISION_MODEL=mimo-v2-omni
+AI_TEXT_MODEL=mimo-v2-omni
+AI_MODEL_CATALOG=mimo-v2-omni|text+image,glm-5.2|text,kimi-k3|text
 ```
 
-Add `OPENAI_API_KEY` for OpenAI chat, PRO images, transcription, and voice replies. Add `XAI_API_KEY` for fast image generation.
+`mimo-v2-omni` is used for food photos because it accepts image input. Text-only catalog entries remain selectable for text meals, but the bot will clearly reject a photo while one is selected. This design does **not** claim one key works directly across OpenAI, xAI, and Google; cross-provider routing must be provided by the configured gateway.
 
-## Deploy on Render
+Catalog entries use `model|text+image`, `model|text`, or `model|text+image+audio`. Users can only select catalog models. A selected text-only model is never silently replaced for a photo; the bot asks the user to select a multimodal model.
 
-1. Fork this repository.
-2. Create a Render Blueprint from your fork. Render reads `render.yaml`.
-3. Add `TELEGRAM_BOT_TOKEN` and provider keys in **Service → Environment**.
-4. Deploy.
+Voice is optional. Set `AI_TRANSCRIPTION_MODEL`; if transcription uses another service, also set `TRANSCRIPTION_API_KEY` and `TRANSCRIPTION_BASE_URL`. Without it, text and photo flows start normally and voice gets a clear fallback message. A local transcription implementation can later be injected behind the same adapter boundary.
 
-`/healthz` works in both webhook and polling modes. Local `.env` files are ignored and never uploaded to Render.
+## Storage and operation
 
-## Make it yours
+Telegram FSM stores structured unconfirmed `MealDraft` objects. With `REDIS_URL`, they survive process restarts; without it, memory storage is used. Confirmed diary entries use SQLite (`DIARY_DB_PATH`) behind `DiaryRepository`, ready for a PostgreSQL implementation. Resetting an analysis clears the draft, never diary records.
 
-Most adaptations only require three files:
+Polling and webhook modes, `/healthz`, access control, rate limiting, safe structured logs, metrics, error handling, long-message helpers, and RU/EN UI remain. Logs intentionally exclude API keys, prompts, request contents, photo bytes, and transcriptions. Operators should still publish a privacy notice covering Telegram and their chosen AI gateway, retention, and deletion.
 
-| Change | File |
-| --- | --- |
-| Bot name, welcome text, buttons | `banana_bot/i18n.py` |
-| Models, providers, limits | `.env` |
-| Avatar | `assets/banana-mate-avatar.png` |
+## Architecture
 
-Suggested [@BotFather](https://t.me/BotFather) profile:
+- `routers/`: Telegram interaction only
+- `services/ai.py`: shared photo/text/voice-after-transcription pipeline
+- `adapters/unified.py`: configurable OpenAI-compatible API
+- `domain.py`: validated food, draft, nutrition, and diary models
+- `diary.py`: repository interface and SQLite implementation
+- `services/safety.py`: medical/eating-disorder guardrails
+- `states.py`: explicit confirmation and diary states
 
-**Name**
-
-`Banana Mate 🍌`
-
-**Short description — RU**
-
-`Дружелюбный AI-помощник в Telegram: вопросы, голос, перевод, файлы и изображения.`
-
-**Short description — EN**
-
-`A friendly Telegram AI for questions, voice, translation, files, and images.`
-
-**Description — RU**
-
-`Просто напишите или отправьте голосовое сообщение. Banana Mate поможет разобраться в вопросе, перевести текст, понять файл, создать изображение или изменить фото — прямо в Telegram.`
-
-**Description — EN**
-
-`Type or send a voice message. Banana Mate can answer questions, translate text, explain files, create images, and edit photos—right inside Telegram.`
-
-The generated avatar is ready at [`assets/banana-mate-avatar.png`](assets/banana-mate-avatar.png).
-
-## Models and fallbacks
-
-Model chains use `provider:model,provider:model` syntax and are checked at startup.
-
-| Task | Default route |
-| --- | --- |
-| Quick chat | OpenAI Luna → Google |
-| Detailed chat and translation | OpenAI Terra → Google |
-| Deep tasks | OpenAI Sol → Google |
-| Fast images | xAI → Google |
-| PRO images | GPT Image → Google |
-| Voice input | OpenAI Transcribe → Google |
-| Voice reply | OpenAI TTS |
-
-Change any route in `.env`; see [`.env.example`](.env.example) for every option.
-
-## Memory and privacy
-
-The bot sends only a bounded context to providers:
-
-- the latest 8 messages;
-- a short rolling summary;
-- facts explicitly saved with `Remember:` or `Запомни:`.
-
-Safe structured logs contain model, latency, token, and error metadata—not prompts, files, API keys, or provider responses. `/admin_stats` shows process-local usage and approximate cost to users listed in `ADMIN_USERS`.
-
-## Project map
-
-```text
-banana_bot/
-├── adapters/       # OpenAI, xAI, Google
-├── routers/        # Telegram commands and media flows
-├── services/       # routing, retries, fallbacks
-├── app.py          # startup, webhook, polling, health checks
-├── config.py       # environment validation
-├── i18n.py         # RU/EN content and button labels
-├── memory.py       # bounded conversation context
-└── observability.py
-```
-
-`bot.py` remains the stable entrypoint. Redis is optional and stores Telegram FSM state when `REDIS_URL` is set.
-
-## Verify changes
-
-Tests use mocked APIs and do not spend provider credits:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Before making the bot public, review provider quotas, `ALLOWED_USERS`, `ADMIN_USERS`, token limits, and your privacy notice.
+Run tests with `python -m pytest -q`. Tests use fake adapters and do not spend API credits.

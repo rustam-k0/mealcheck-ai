@@ -1,76 +1,82 @@
 from __future__ import annotations
 
-import time
-from typing import Awaitable, Callable, TypeVar
+import json
+from pydantic import BaseModel, ValidationError
 
-from banana_bot.adapters.base import AIAdapter
-from banana_bot.config import AppConfig, ModelTarget
-from banana_bot.domain import AudioResult, ImageResult, TextResult
+from banana_bot.adapters.unified import UnifiedAIAdapter
+from banana_bot.config import AppConfig, ConfigError
+from banana_bot.diary import DiaryRepository
+from banana_bot.domain import DiaryEntry, DraftStatus, MealDraft, NutritionEstimate, RecognitionResult, TextResult
 from banana_bot.http import ProviderError
-from banana_bot.memory import ConversationMemory
-from banana_bot.observability import Metrics, log_event
+from banana_bot.services.prompts import CALCULATION_SYSTEM_PROMPT, NUTRITION_SCHEMA, RECOGNITION_SCHEMA, RECOGNITION_SYSTEM_PROMPT
 
 
-T = TypeVar("T")
+class InvalidModelResponse(ProviderError):
+    def __init__(self): super().__init__(502, "The AI gateway returned invalid structured data", "invalid_json")
 
 
-class AIService:
-    def __init__(self, config: AppConfig, adapters: dict[str, AIAdapter], memory: ConversationMemory, metrics: Metrics):
-        self.config, self.adapters, self.memory, self.metrics = config, adapters, memory, metrics
+class FoodAnalysisService:
+    def __init__(self, config: AppConfig, adapter: UnifiedAIAdapter, diary: DiaryRepository, transcription_adapter: UnifiedAIAdapter | None = None):
+        self.config, self.adapter, self.diary = config, adapter, diary
+        self.transcription_adapter = transcription_adapter or adapter
 
-    async def _fallback(self, operation: str, chain: tuple[ModelTarget, ...], call: Callable[[AIAdapter, ModelTarget], Awaitable[T]]) -> T:
-        last_error: Exception | None = None
-        for target in self.config.enabled_chain(chain):
-            started = time.perf_counter()
+    def _model(self, selected: str | None, capability: str) -> str:
+        name = selected or (self.config.ai_vision_model if capability == "image" else self.config.ai_text_model)
+        self.config.validate_model(name, capability)
+        return name
+
+    async def _structured(self, model: str, system: str, prompt: str, schema: str, target: type[BaseModel], image: bytes | None = None):
+        request = f"{prompt}\nRequired JSON schema: {schema}"
+        response_schema = target.model_json_schema()
+        result = await self.adapter.complete(model, system, request, image=image, max_tokens=self.config.max_output_tokens, response_schema=response_schema)
+        for attempt in range(2):
             try:
-                result = await call(self.adapters[target.provider], target)
-                usage = getattr(result, "usage", None)
-                self.metrics.record(target.provider, target.model, (time.perf_counter() - started) * 1000, getattr(usage, "input_tokens", 0), getattr(usage, "output_tokens", 0))
-                log_event("provider_success", operation=operation, provider=target.provider, model=target.model)
-                return result
-            except ProviderError as exc:
-                self.metrics.record(target.provider, target.model, (time.perf_counter() - started) * 1000, error=True)
-                log_event("provider_failure", operation=operation, provider=target.provider, model=target.model, status=exc.status, code=exc.code)
-                if exc.safety_related:
-                    raise
-                last_error = exc
-            except Exception as exc:
-                self.metrics.record(target.provider, target.model, (time.perf_counter() - started) * 1000, error=True)
-                log_event("provider_failure", operation=operation, provider=target.provider, model=target.model, error_type=type(exc).__name__)
-                last_error = exc
-        if isinstance(last_error, ProviderError):
-            raise last_error
-        raise ProviderError(503, f"No provider completed {operation}") from last_error
+                return target.model_validate_json(result.text)
+            except (ValidationError, ValueError, json.JSONDecodeError):
+                if attempt:
+                    raise InvalidModelResponse()
+                result = await self.adapter.complete(model, "Repair JSON. Return only valid JSON matching the schema; do not add facts.", f"Schema: {schema}\nInvalid response: {result.text}", max_tokens=self.config.max_output_tokens, response_schema=response_schema)
+        raise InvalidModelResponse()
 
-    async def chat(self, user_id: int, text: str, mode: str = "fast", detailed: bool = False) -> TextResult:
-        chains = {"fast": self.config.chat_fast_chain, "balanced": self.config.chat_balanced_chain, "complex": self.config.chat_complex_chain}
-        self.memory.add(user_id, "user", text)
-        messages = [{"role": "system", "content": "Answer concisely by default. Be accurate and use the user's language."}, *self.memory.context(user_id)]
-        tokens = self.config.detailed_output_tokens if detailed else self.config.max_output_tokens
-        result = await self._fallback("chat", chains.get(mode, chains["fast"]), lambda adapter, target: adapter.chat(target.model, messages, tokens))
-        self.memory.add(user_id, "assistant", result.text)
-        return result
+    async def recognize_photo(self, user_id: int, image: bytes, image_file_id: str, selected_model: str | None = None, lang: str = "RU") -> MealDraft:
+        model = self._model(selected_model, "image")
+        result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Analyze this meal photo. User language: {lang}.", RECOGNITION_SCHEMA, RecognitionResult, image)
+        return self._draft(user_id, "photo", model, result, image_file_id)
 
-    async def generate_image(self, prompt: str, mode: str) -> ImageResult:
-        chain = self.config.image_pro_chain if mode == "PRO" else self.config.image_fast_chain
-        return await self._fallback("generate_image", chain, lambda adapter, target: adapter.image(target.model, prompt, dict(target.options)))
+    async def recognize_text(self, user_id: int, value: str, selected_model: str | None = None, lang: str = "RU", source: str = "text") -> MealDraft:
+        model = self._model(selected_model, "text")
+        result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Extract the meal and portions from this description. User language: {lang}. Description: {value}", RECOGNITION_SCHEMA, RecognitionResult)
+        return self._draft(user_id, source, model, result)
 
-    async def edit_image(self, image: bytes, prompt: str, mode: str) -> ImageResult:
-        chain = self.config.image_pro_chain if mode == "PRO" else self.config.image_fast_chain
-        return await self._fallback("edit_image", chain, lambda adapter, target: adapter.edit_image(target.model, image, prompt, dict(target.options)))
+    @staticmethod
+    def _draft(user_id: int, source: str, model: str, result: RecognitionResult, image_file_id: str | None = None) -> MealDraft:
+        return MealDraft(user_id=user_id, source=source, image_file_id=image_file_id, detected_items=result.items,
+            portions=[f"{x.amount:g} {x.unit}" for x in result.items], preparation_notes=[x.preparation for x in result.items if x.preparation],
+            confidence=result.overall_confidence, selected_model=model, missing_details=result.missing_details,
+            clarifying_questions=result.clarifying_questions[:2], warnings=result.warnings)
+
+    async def apply_correction(self, draft: MealDraft, correction: str, lang: str = "RU") -> MealDraft:
+        model = self._model(draft.selected_model, "text")
+        prompt = f"Update this meal using the user's correction. Do not calculate nutrition. Current: {draft.model_dump_json()}. Correction: {correction}. Language: {lang}."
+        result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, prompt, RECOGNITION_SCHEMA, RecognitionResult)
+        return self._draft(draft.user_id, draft.source, model, result, draft.image_file_id)
+
+    async def calculate_confirmed_meal(self, draft: MealDraft) -> NutritionEstimate:
+        if draft.status != DraftStatus.confirmed:
+            raise ValueError("Nutrition can only be calculated for a confirmed meal draft")
+        model = self._model(draft.selected_model, "text")
+        prompt = "Confirmed items (do not change): " + json.dumps([x.model_dump() for x in draft.detected_items], ensure_ascii=False)
+        return await self._structured(model, CALCULATION_SYSTEM_PROMPT, prompt, NUTRITION_SCHEMA, NutritionEstimate)
+
+    def save_to_diary(self, draft: MealDraft, estimate: NutritionEstimate) -> DiaryEntry:
+        if draft.status not in {DraftStatus.confirmed, DraftStatus.calculated}:
+            raise ValueError("Only a confirmed meal can be saved")
+        total = estimate.total
+        return self.diary.add(DiaryEntry(user_id=draft.user_id, source=draft.source, confirmed_items=draft.detected_items,
+            total_kcal=total.kcal, protein_g=total.protein_g, fat_g=total.fat_g, carbs_g=total.carbs_g,
+            uncertainty="; ".join(estimate.uncertainty_reasons), model=draft.selected_model))
 
     async def transcribe(self, audio: bytes) -> TextResult:
-        return await self._fallback("transcribe", self.config.transcription_chain, lambda adapter, target: adapter.transcribe(target.model, audio))
-
-    async def analyze_file(self, content: bytes, mime_type: str, prompt: str) -> TextResult:
-        return await self._fallback("analyze_file", self.config.file_analysis_chain, lambda adapter, target: adapter.analyze_file(target.model, content, mime_type, prompt, self.config.max_output_tokens))
-
-    async def synthesize(self, text: str) -> AudioResult:
-        spoken_text = text.strip()[:3500]
-        if not spoken_text:
-            raise ProviderError(400, "There is no text to synthesize")
-        return await self._fallback(
-            "synthesize",
-            self.config.speech_chain,
-            lambda adapter, target: adapter.synthesize(target.model, spoken_text, self.config.speech_voice),
-        )
+        if not self.config.ai_transcription_model:
+            raise ProviderError(501, "Audio transcription is not configured", "transcription_unavailable")
+        return await self.transcription_adapter.transcribe(self.config.ai_transcription_model, audio)

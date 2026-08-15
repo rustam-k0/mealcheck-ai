@@ -1,110 +1,65 @@
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram import types
 from aiogram.types import CallbackQuery, Message
 
-from banana_bot.formatting import chunks, telegram_html
+from banana_bot.config import ConfigError
+from banana_bot.domain import DraftStatus, MealDraft, NutritionEstimate
+from banana_bot.formatting import telegram_html
 from banana_bot.http import ProviderError
 from banana_bot.i18n import button_values, text
-from banana_bot.keyboards import detail_keyboard, main_keyboard
-from banana_bot.observability import log_event
-from banana_bot.services.ai import AIService
+from banana_bot.keyboards import confirmation_keyboard, diary_keyboard, main_keyboard
+from banana_bot.services.ai import FoodAnalysisService
+from banana_bot.services.safety import safety_reply
 from banana_bot.states import BotStates
 
+def _draft_text(draft:MealDraft,lang:str)->str:
+    items="\n".join(f"{i}. {telegram_html(x.name)} — ~{x.amount:g} {x.unit}"+(f" ({telegram_html(x.preparation)})" if x.preparation else "") for i,x in enumerate(draft.detected_items,1))
+    questions=("\n\n"+"\n".join(draft.clarifying_questions[:2])) if draft.clarifying_questions else ""
+    return text(lang,"RECOGNIZED",items=items or "—",questions=questions)
 
-def build_text_router(ai: AIService) -> Router:
-    router = Router(name="text")
-    modes = [
-        ("BTN_CHAT", BotStates.chat, "CHAT_PROMPT", "fast"),
-        ("BTN_COMPLEX", BotStates.complex_task, "COMPLEX_PROMPT", "complex"),
-        ("BTN_GENERATE", BotStates.image_prompt, "GENERATE_PROMPT", None),
-        ("BTN_EDIT", BotStates.photo_to_edit, "EDIT_PROMPT", None),
-        ("BTN_FILE", BotStates.file_analysis, "FILE_PROMPT", None),
-        ("BTN_TRANSLATE", BotStates.translation, "TRANSLATE_PROMPT", "balanced"),
-    ]
-    for button_key, target_state, prompt_key, requested_mode in modes:
-        async def select_mode(message: Message, state: FSMContext, target=target_state, prompt=prompt_key, mode=requested_mode) -> None:
-            data = await state.get_data()
-            lang = data.get("lang", "EN")
-            await state.set_state(target)
-            if mode:
-                await state.update_data(active_chat_mode=mode)
-            await message.answer(text(lang, prompt), reply_markup=main_keyboard(lang))
-        router.message.register(select_mode, F.text.in_(button_values(button_key)))
+async def show_draft(message:Message,state:FSMContext,draft:MealDraft,lang:str):
+    await state.update_data(meal_draft=draft.model_dump_json()); await state.set_state(BotStates.awaiting_food_confirmation)
+    await message.answer(_draft_text(draft,lang),reply_markup=confirmation_keyboard(lang))
 
-    async def send_result(message: Message, value: str, lang: str) -> None:
-        parts = [telegram_html(part) for part in chunks(value)]
-        for part in parts[:-1]:
-            await message.answer(part)
-        await message.answer(parts[-1], reply_markup=detail_keyboard(lang))
+async def show_estimate(message:Message,state:FSMContext,draft:MealDraft,estimate:NutritionEstimate,lang:str):
+    rows="\n".join(f"{telegram_html(x.name)} — {x.kcal:.0f} kcal | P {x.protein_g:.1f} F {x.fat_g:.1f} C {x.carbs_g:.1f}" for x in estimate.items)
+    total=estimate.total; await state.update_data(meal_draft=draft.model_dump_json(),nutrition_estimate=estimate.model_dump_json()); await state.set_state(BotStates.awaiting_diary_confirmation)
+    await message.answer(text(lang,"ESTIMATE",table=rows,kcal=total.kcal,protein=total.protein_g,fat=total.fat_g,carbs=total.carbs_g,error=estimate.estimated_error_percent,reasons=telegram_html("; ".join(estimate.uncertainty_reasons) or "—")),reply_markup=diary_keyboard(lang))
 
-    async def run_chat(message: Message, state: FSMContext, content: str, forced_mode: str | None = None) -> None:
-        data = await state.get_data()
-        lang = data.get("lang", "EN")
-        current = await state.get_state()
-        mode = forced_mode or data.get("active_chat_mode") or data.get("chat_mode", "fast")
-        if current == BotStates.translation.state:
-            mode = "balanced"
-            content = "Translate accurately. Preserve tone and formatting. " + content
-        status = await message.answer(text(lang, "PROCESSING"))
+def build_text_router(service:FoodAnalysisService)->Router:
+    router=Router(name="text")
+    excluded=set().union(*(button_values(k) for k in ("BTN_ADD","BTN_TODAY","BTN_EDIT_LAST","BTN_DELETE_LAST","BTN_SETTINGS","BTN_NEW","BTN_LANG","BTN_MODEL")))
+    @router.message(BotStates.awaiting_food_correction,F.text)
+    @router.message(BotStates.awaiting_food_confirmation,F.text)
+    async def correction(message:Message,state:FSMContext):
+        data=await state.get_data(); lang=data.get("lang","EN"); status=await message.answer(text(lang,"PROCESSING"))
+        try: draft=await service.apply_correction(MealDraft.model_validate_json(data["meal_draft"]),message.text,lang); await status.delete(); await show_draft(message,state,draft,lang)
+        except Exception: await status.edit_text(text(lang,"ERR"))
+    @router.callback_query(F.data=="meal:correct")
+    async def correct(callback:CallbackQuery,state:FSMContext):
+        lang=(await state.get_data()).get("lang","EN"); await callback.answer(); await state.set_state(BotStates.awaiting_food_correction); await callback.message.answer(text(lang,"CORRECTION_PROMPT"))
+    @router.callback_query(F.data=="meal:cancel")
+    async def cancel(callback:CallbackQuery,state:FSMContext):
+        data=await state.get_data(); lang=data.get("lang","EN"); await callback.answer(); await state.clear(); await state.update_data(lang=lang,selected_model=data.get("selected_model",service.config.ai_vision_model)); await callback.message.answer(text(lang,"NEW_DIALOG"),reply_markup=main_keyboard(lang))
+    @router.callback_query(F.data=="meal:confirm")
+    async def confirm(callback:CallbackQuery,state:FSMContext):
+        data=await state.get_data(); lang=data.get("lang","EN"); await callback.answer(); status=await callback.message.answer(text(lang,"PROCESSING"))
         try:
-            result = await ai.chat(message.from_user.id, content, mode)
-            await state.update_data(last_request=content, last_mode=mode)
-            await status.delete()
-            await send_result(message, result.text, lang)
-        except ProviderError as exc:
-            key = "ERR_SAFETY" if exc.safety_related else "ERR_RATELIMIT" if exc.status == 429 else "ERR_SERVER" if exc.status >= 500 else "ERR_UNKNOWN"
-            await status.edit_text(text(lang, key))
-
-    @router.message(BotStates.chat, F.text)
-    @router.message(BotStates.complex_task, F.text)
-    @router.message(BotStates.translation, F.text)
-    async def text_request(message: Message, state: FSMContext) -> None:
-        current = await state.get_state()
-        forced = "complex" if current == BotStates.complex_task.state else None
-        await run_chat(message, state, message.text or "", forced)
-
-    @router.callback_query(F.data == "answer:detail")
-    async def detail(callback: CallbackQuery, state: FSMContext) -> None:
-        log_event("callback_received", action="detail", user_id=callback.from_user.id)
-        data = await state.get_data()
-        lang = data.get("lang", "EN")
-        if not data.get("last_request") or not callback.message:
-            await callback.answer(text(lang, "NO_DETAIL"), show_alert=True)
-            return
-        await callback.answer()
-        prompt = data["last_request"] + "\n\n" + text(lang, "DETAIL_PROMPT")
-        status = await callback.message.answer(text(lang, "PROCESSING"))
-        try:
-            result = await ai.chat(callback.from_user.id, prompt, data.get("last_mode", "balanced"), detailed=True)
-            await status.delete()
-            await send_result(callback.message, result.text, lang)
-        except ProviderError as exc:
-            log_event("callback_failure", action="detail", status=exc.status, code=exc.code)
-            await status.edit_text(text(lang, "ERR_SERVER"))
-        except Exception as exc:
-            log_event("callback_failure", action="detail", error_type=type(exc).__name__)
-            await status.edit_text(text(lang, "ERR_SERVER"))
-
-    @router.callback_query(F.data == "answer:speak")
-    async def speak(callback: CallbackQuery, state: FSMContext) -> None:
-        log_event("callback_received", action="speak", user_id=callback.from_user.id)
-        data = await state.get_data()
-        lang = data.get("lang", "EN")
-        if not callback.message or not callback.message.text:
-            await callback.answer(text(lang, "VOICE_ERROR"), show_alert=True)
-            return
-        await callback.answer()
-        status = await callback.message.answer(text(lang, "VOICE_PROCESSING"))
-        try:
-            result = await ai.synthesize(callback.message.text)
-            await callback.message.answer_voice(types.BufferedInputFile(result.content, filename="answer.ogg"))
-            await status.delete()
-        except ProviderError as exc:
-            log_event("callback_failure", action="speak", status=exc.status, code=exc.code)
-            await status.edit_text(text(lang, "VOICE_ERROR"))
-        except Exception as exc:
-            log_event("callback_failure", action="speak", error_type=type(exc).__name__)
-            await status.edit_text(text(lang, "VOICE_ERROR"))
-
+            draft=MealDraft.model_validate_json(data["meal_draft"]).model_copy(update={"status":DraftStatus.confirmed}); estimate=await service.calculate_confirmed_meal(draft); await status.delete(); await show_estimate(callback.message,state,draft,estimate,lang)
+        except Exception: await status.edit_text(text(lang,"ERR"))
+    @router.callback_query(F.data.in_({"diary:save","diary:skip"}))
+    async def diary_action(callback:CallbackQuery,state:FSMContext):
+        data=await state.get_data(); lang=data.get("lang","EN"); await callback.answer()
+        if callback.data=="diary:save":
+            if data.get("edit_last_pending"): service.diary.delete_last(callback.from_user.id)
+            service.save_to_diary(MealDraft.model_validate_json(data["meal_draft"]),NutritionEstimate.model_validate_json(data["nutrition_estimate"])); await callback.message.answer(text(lang,"SAVED"))
+        else: await callback.message.answer(text(lang,"NOT_SAVED"))
+        model=data.get("selected_model",service.config.ai_vision_model); await state.clear(); await state.update_data(lang=lang,selected_model=model)
+    @router.message(F.text,~F.text.in_(excluded))
+    async def food_text(message:Message,state:FSMContext):
+        data=await state.get_data(); lang=data.get("lang","EN"); safe=safety_reply(message.text,lang)
+        if safe: await message.answer(safe); return
+        status=await message.answer(text(lang,"PROCESSING"))
+        try: draft=await service.recognize_text(message.from_user.id,message.text,data.get("selected_model"),lang); await status.delete(); await show_draft(message,state,draft,lang)
+        except (ProviderError,ConfigError): await status.edit_text(text(lang,"ERR"))
     return router

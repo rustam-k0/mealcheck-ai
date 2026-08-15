@@ -7,11 +7,13 @@ from banana_bot.observability import Metrics, log_event
 class ObservabilityTests(unittest.TestCase):
     def test_structured_log_drops_sensitive_content_fields(self):
         with self.assertLogs("banana_bot", level="INFO") as captured:
-            log_event("request", provider="openai", prompt="private", api_key="secret")
+            log_event("request", provider="openai", prompt="private", api_key="secret", photo=b"bytes", transcription="private")
         payload = json.loads(captured.records[0].getMessage())
         self.assertEqual(payload["provider"], "openai")
         self.assertNotIn("prompt", payload)
         self.assertNotIn("api_key", payload)
+        self.assertNotIn("photo", payload)
+        self.assertNotIn("transcription", payload)
 
     def test_stats_include_latency_tokens_errors_and_cost(self):
         metrics = Metrics()

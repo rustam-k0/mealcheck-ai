@@ -12,7 +12,8 @@ logger = logging.getLogger("banana_bot")
 
 
 def log_event(event: str, **fields: Any) -> None:
-    safe = {key: value for key, value in fields.items() if key not in {"prompt", "content", "token", "api_key"}}
+    sensitive = {"prompt", "content", "request", "response", "token", "api_key", "photo", "image", "audio", "transcript", "transcription", "file", "headers", "authorization"}
+    safe = {key: value for key, value in fields.items() if key.lower() not in sensitive}
     logger.info(json.dumps({"event": event, **safe}, ensure_ascii=False, default=str))
 
 

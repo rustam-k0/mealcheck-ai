@@ -11,12 +11,18 @@ services:
         value: 3.13.5
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-      - key: OPENAI_API_KEY
+      - key: AI_API_KEY
         sync: false
-      - key: XAI_API_KEY
-        sync: false
-      - key: GOOGLE_API_KEY
-        sync: false
+      - key: AI_BASE_URL
+        value: https://opencode.ai/zen/go/v1
+      - key: AI_PROVIDER
+        value: opencode-go
+      - key: AI_VISION_MODEL
+        value: mimo-v2-omni
+      - key: AI_TEXT_MODEL
+        value: mimo-v2-omni
+      - key: AI_MODEL_CATALOG
+        value: mimo-v2-omni|text+image,glm-5.2|text,kimi-k3|text
       - key: ALLOWED_USERS
         sync: false
       - key: ADMIN_USERS
