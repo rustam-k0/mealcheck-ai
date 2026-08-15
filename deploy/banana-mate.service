@@ -1,0 +1,23 @@
+[Unit]
+Description=Banana Mate Telegram food diary bot
+After=network-online.target redis-server.service
+Wants=network-online.target redis-server.service
+
+[Service]
+Type=simple
+User=banana-mate
+Group=banana-mate
+WorkingDirectory=/opt/banana-mate
+EnvironmentFile=/etc/banana-mate.env
+ExecStart=/opt/banana-mate/.venv/bin/python /opt/banana-mate/bot.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/banana-mate
+
+[Install]
+WantedBy=multi-user.target
