@@ -107,7 +107,7 @@ class AppConfig:
 def load_config(env: Mapping[str, str] | None = None, *, validate: bool = False) -> AppConfig:
     values = os.environ if env is None else env
     allowed_raw = values.get("ALLOWED_USERS", "")
-    vision = values.get("AI_VISION_MODEL", "mimo-v2-omni")
+    vision = values.get("AI_VISION_MODEL", "mimo-v2.5")
     text = values.get("AI_TEXT_MODEL", vision)
     catalog = _catalog(values.get("AI_MODEL_CATALOG", f"{vision}|text+image" + (f",{text}|text" if text != vision else "")))
     config = AppConfig(

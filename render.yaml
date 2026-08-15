@@ -18,11 +18,11 @@ services:
       - key: AI_PROVIDER
         value: opencode-go
       - key: AI_VISION_MODEL
-        value: mimo-v2-omni
+        value: mimo-v2.5
       - key: AI_TEXT_MODEL
-        value: mimo-v2-omni
+        value: mimo-v2.5
       - key: AI_MODEL_CATALOG
-        value: mimo-v2-omni|text+image,glm-5.2|text,kimi-k3|text
+        value: mimo-v2.5|text+image,glm-5.2|text,kimi-k3|text
       - key: ALLOWED_USERS
         sync: false
       - key: ADMIN_USERS

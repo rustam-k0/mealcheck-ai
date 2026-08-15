@@ -26,12 +26,12 @@ The supplied example is configured for OpenCode Go using its OpenAI-compatible C
 AI_API_KEY=your_opencode_go_key
 AI_BASE_URL=https://opencode.ai/zen/go/v1
 AI_PROVIDER=opencode-go
-AI_VISION_MODEL=mimo-v2-omni
-AI_TEXT_MODEL=mimo-v2-omni
-AI_MODEL_CATALOG=mimo-v2-omni|text+image,glm-5.2|text,kimi-k3|text
+AI_VISION_MODEL=mimo-v2.5
+AI_TEXT_MODEL=mimo-v2.5
+AI_MODEL_CATALOG=mimo-v2.5|text+image,glm-5.2|text,kimi-k3|text
 ```
 
-`mimo-v2-omni` is used for food photos because it accepts image input. Text-only catalog entries remain selectable for text meals, but the bot will clearly reject a photo while one is selected. This design does **not** claim one key works directly across OpenAI, xAI, and Google; cross-provider routing must be provided by the configured gateway.
+`mimo-v2.5` is used for food photos because it accepts image input through OpenCode Go. Text-only catalog entries remain selectable for text meals, but the bot will clearly reject a photo while one is selected. This design does **not** claim one key works directly across OpenAI, xAI, and Google; cross-provider routing must be provided by the configured gateway.
 
 Catalog entries use `model|text+image`, `model|text`, or `model|text+image+audio`. Users can only select catalog models. A selected text-only model is never silently replaced for a photo; the bot asks the user to select a multimodal model.
 
