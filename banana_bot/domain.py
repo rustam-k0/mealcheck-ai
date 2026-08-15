@@ -25,9 +25,6 @@ class FoodItem(BaseModel):
 class RecognitionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     items: list[FoodItem]
-    missing_details: list[str]
-    overall_confidence: float = Field(ge=0, le=1)
-    warnings: list[str]
 
 
 class MealDraft(BaseModel):
@@ -36,15 +33,9 @@ class MealDraft(BaseModel):
     source: str = Field(pattern=r"^(photo|text|voice)$")
     image_file_id: str | None = None
     detected_items: list[FoodItem]
-    portions: list[str] = Field(default_factory=list)
-    preparation_notes: list[str] = Field(default_factory=list)
-    confidence: float = Field(ge=0, le=1)
     status: DraftStatus = DraftStatus.awaiting_confirmation
     selected_model: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    missing_details: list[str] = Field(default_factory=list)
-    clarifying_questions: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
 
 
 class NutritionItem(BaseModel):

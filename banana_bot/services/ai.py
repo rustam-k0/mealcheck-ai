@@ -40,25 +40,24 @@ class FoodAnalysisService:
 
     async def recognize_photo(self, user_id: int, image: bytes, image_file_id: str, selected_model: str | None = None, lang: str = "RU") -> MealDraft:
         model = self._model(selected_model, "image")
-        result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Analyze this meal photo. User language: {lang}.", RECOGNITION_SCHEMA, RecognitionResult, image)
+        result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Фото еды. Язык: {lang}.", RECOGNITION_SCHEMA, RecognitionResult, image)
         return self._draft(user_id, "photo", model, result, image_file_id)
 
     async def recognize_text(self, user_id: int, value: str, selected_model: str | None = None, lang: str = "RU", source: str = "text") -> MealDraft:
         model = self._model(selected_model, "text")
-        result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Extract the meal and portions from this description. User language: {lang}. Description: {value}", RECOGNITION_SCHEMA, RecognitionResult)
+        result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Язык: {lang}. Еда: {value}", RECOGNITION_SCHEMA, RecognitionResult)
         return self._draft(user_id, source, model, result)
 
     @staticmethod
     def _draft(user_id: int, source: str, model: str, result: RecognitionResult, image_file_id: str | None = None, interaction_id: str | None = None) -> MealDraft:
         identity = {"interaction_id": interaction_id} if interaction_id else {}
-        return MealDraft(**identity, user_id=user_id, source=source, image_file_id=image_file_id, detected_items=result.items,
-            portions=[f"{x.amount:g} {x.unit}" for x in result.items], preparation_notes=[x.preparation for x in result.items if x.preparation],
-            confidence=result.overall_confidence, selected_model=model, missing_details=result.missing_details,
-            clarifying_questions=[], warnings=result.warnings)
+        return MealDraft(**identity, user_id=user_id, source=source, image_file_id=image_file_id,
+            detected_items=result.items, selected_model=model)
 
     async def apply_correction(self, draft: MealDraft, correction: str, lang: str = "RU") -> MealDraft:
         model = self._model(self.config.ai_text_model, "text")
-        prompt = f"Apply the user's correction to the CURRENT COMPLETE MEAL. Preserve every existing item and amount that the user did not explicitly change; add, remove, or replace only what the correction explicitly requests. Return the complete updated meal, never just the correction. Do not calculate nutrition. Current complete meal: {draft.model_dump_json()}. Correction: {correction}. Language: {lang}."
+        items = json.dumps([item.model_dump() for item in draft.detected_items], ensure_ascii=False)
+        prompt = f"Верни полный обновлённый список. Неизменённые позиции сохрани. Язык: {lang}. Сейчас: {items}. Правка: {correction}"
         result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, prompt, RECOGNITION_SCHEMA, RecognitionResult)
         return self._draft(draft.user_id, draft.source, model, result, draft.image_file_id, draft.interaction_id)
 
