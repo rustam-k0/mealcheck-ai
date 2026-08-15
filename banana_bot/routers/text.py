@@ -13,7 +13,8 @@ from banana_bot.services.safety import safety_reply
 from banana_bot.states import BotStates
 
 def _draft_text(draft:MealDraft,lang:str)->str:
-    items="\n".join(f"{i}. {telegram_html(x.name)} — ~{x.amount:g} {x.unit}"+(f" ({telegram_html(x.preparation)})" if x.preparation else "") for i,x in enumerate(draft.detected_items,1))
+    units={"RU":{"g":"г","ml":"мл","piece":"шт.","portion":"порц."},"EN":{"g":"g","ml":"ml","piece":"pc","portion":"serving"}}
+    items="\n".join(f"{i}. {telegram_html(x.name)} — ~{x.amount:g} {units.get(lang,units['EN']).get(x.unit,x.unit)}"+(f" ({telegram_html(x.preparation)})" if x.preparation else "") for i,x in enumerate(draft.detected_items,1))
     questions=("\n\n"+"\n".join(draft.clarifying_questions[:2])) if draft.clarifying_questions else ""
     return text(lang,"RECOGNIZED",items=items or "—",questions=questions)
 
@@ -60,6 +61,6 @@ def build_text_router(service:FoodAnalysisService)->Router:
         data=await state.get_data(); lang=data.get("lang","EN"); safe=safety_reply(message.text,lang)
         if safe: await message.answer(safe); return
         status=await message.answer(text(lang,"PROCESSING"))
-        try: draft=await service.recognize_text(message.from_user.id,message.text,data.get("selected_model"),lang); await status.delete(); await show_draft(message,state,draft,lang)
+        try: draft=await service.recognize_text(message.from_user.id,message.text,service.config.ai_text_model,lang); await status.delete(); await show_draft(message,state,draft,lang)
         except (ProviderError,ConfigError): await status.edit_text(text(lang,"ERR"))
     return router

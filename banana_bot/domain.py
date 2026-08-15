@@ -30,6 +30,11 @@ class RecognitionResult(BaseModel):
     warnings: list[str]
 
 
+class VoiceRecognitionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transcript: str = Field(min_length=1)
+
+
 class MealDraft(BaseModel):
     user_id: int
     source: str = Field(pattern=r"^(photo|text|voice)$")

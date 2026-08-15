@@ -96,8 +96,10 @@ class AppConfig:
             raise ConfigError("AI_BASE_URL must be an http(s) URL")
         self.validate_model(self.ai_text_model, "text")
         self.validate_model(self.ai_vision_model, "image")
-        if self.ai_transcription_model and not (self.transcription_api_key or self.ai_api_key):
-            raise ConfigError("Audio transcription has no API key")
+        if self.ai_transcription_model:
+            self.validate_model(self.ai_transcription_model, "audio")
+            if not (self.transcription_api_key or self.ai_api_key):
+                raise ConfigError("Audio transcription has no API key")
         if self.memory_messages != 8:
             raise ConfigError("MEMORY_MESSAGES must be 8")
         if self.http_retries < 0 or self.rate_limit_per_minute < 1:
@@ -108,13 +110,13 @@ def load_config(env: Mapping[str, str] | None = None, *, validate: bool = False)
     values = os.environ if env is None else env
     allowed_raw = values.get("ALLOWED_USERS", "")
     vision = values.get("AI_VISION_MODEL", "mimo-v2.5")
-    text = values.get("AI_TEXT_MODEL", vision)
-    catalog = _catalog(values.get("AI_MODEL_CATALOG", f"{vision}|text+image" + (f",{text}|text" if text != vision else "")))
+    text = values.get("AI_TEXT_MODEL", "mimo-v2.5-pro")
+    catalog = _catalog(values.get("AI_MODEL_CATALOG", f"{vision}|text+image+audio" + (f",{text}|text" if text != vision else "")))
     config = AppConfig(
         telegram_bot_token=values.get("TELEGRAM_BOT_TOKEN"), ai_api_key=values.get("AI_API_KEY"),
         ai_base_url=values.get("AI_BASE_URL", "https://opencode.ai/zen/go/v1").rstrip("/"),
         ai_provider=values.get("AI_PROVIDER", "opencode-go"), ai_vision_model=vision, ai_text_model=text,
-        ai_transcription_model=values.get("AI_TRANSCRIPTION_MODEL") or None,
+        ai_transcription_model=values.get("AI_TRANSCRIPTION_MODEL") or vision,
         transcription_api_key=values.get("TRANSCRIPTION_API_KEY") or None,
         transcription_base_url=(values.get("TRANSCRIPTION_BASE_URL") or values.get("AI_BASE_URL") or "https://api.openai.com/v1").rstrip("/"),
         model_catalog=catalog, allowed_users_env=allowed_raw, webhook_url=values.get("WEBHOOK_URL"),

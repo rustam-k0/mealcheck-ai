@@ -1,6 +1,8 @@
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
+from io import BytesIO
+from PIL import Image, ImageOps
 
 from banana_bot.config import ConfigError
 from banana_bot.http import ProviderError
@@ -11,16 +13,23 @@ from banana_bot.services.ai import FoodAnalysisService
 async def _download(bot,file_id:str)->bytes:
     value=await bot.get_file(file_id); stream=await bot.download_file(value.file_path); return stream.read()
 
+def _optimize_photo(content: bytes) -> bytes:
+    with Image.open(BytesIO(content)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+        output = BytesIO(); image.save(output, "JPEG", quality=82, optimize=True)
+        return output.getvalue()
+
 def build_media_router(service:FoodAnalysisService)->Router:
     router=Router(name="media")
     @router.message(F.photo)
     async def photo(message:Message,state:FSMContext,bot):
-        data=await state.get_data(); lang=data.get("lang","EN"); model=data.get("selected_model",service.config.ai_vision_model)
+        data=await state.get_data(); lang=data.get("lang","EN"); model=service.config.ai_vision_model
         try: service.config.validate_model(model,"image")
         except ConfigError: await message.answer(text(lang,"NO_VISION")); return
         status=await message.answer(text(lang,"PROCESSING"))
         try:
-            image=await _download(bot,message.photo[-1].file_id); draft=await service.recognize_photo(message.from_user.id,image,message.photo[-1].file_id,model,lang); await status.delete(); await show_draft(message,state,draft,lang)
+            image=_optimize_photo(await _download(bot,message.photo[-1].file_id)); draft=await service.recognize_photo(message.from_user.id,image,message.photo[-1].file_id,model,lang); await status.delete(); await show_draft(message,state,draft,lang)
         except Exception: await status.edit_text(text(lang,"ERR"))
     @router.message(F.voice)
     async def voice(message:Message,state:FSMContext,bot):
@@ -29,7 +38,7 @@ def build_media_router(service:FoodAnalysisService)->Router:
         status=await message.answer(text(lang,"PROCESSING"))
         try:
             audio=await _download(bot,message.voice.file_id); transcript=await service.transcribe(audio); await status.delete(); await message.answer(text(lang,"TRANSCRIBED",value=transcript.text[:1000]))
-            draft=await service.recognize_text(message.from_user.id,transcript.text,data.get("selected_model"),lang,source="voice")
+            draft=await service.recognize_text(message.from_user.id,transcript.text,service.config.ai_text_model,lang,source="voice")
             if not draft.detected_items: await message.answer(text(lang,"BAD_VOICE")); return
             await show_draft(message,state,draft,lang)
         except ProviderError as exc: await status.edit_text(text(lang,"NO_TRANSCRIPTION" if exc.code=="transcription_unavailable" else "BAD_VOICE"))

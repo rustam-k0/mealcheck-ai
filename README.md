@@ -1,4 +1,4 @@
-# Banana Mate — food photo diary 🍌
+# BiteMate — food photo diary 🍽
 
 A focused Telegram bot for approximate meal recognition from photos, text, and voice. It first shows editable foods and portions, calculates calories and protein/fat/carbohydrates only after explicit confirmation, and can save the confirmed result to a local diary.
 
@@ -27,11 +27,12 @@ AI_API_KEY=your_opencode_go_key
 AI_BASE_URL=https://opencode.ai/zen/go/v1
 AI_PROVIDER=opencode-go
 AI_VISION_MODEL=mimo-v2.5
-AI_TEXT_MODEL=mimo-v2.5
-AI_MODEL_CATALOG=mimo-v2.5|text+image,glm-5.2|text,kimi-k3|text
+AI_TEXT_MODEL=mimo-v2.5-pro
+AI_TRANSCRIPTION_MODEL=mimo-v2.5
+AI_MODEL_CATALOG=mimo-v2.5|text+image+audio,mimo-v2.5-pro|text
 ```
 
-`mimo-v2.5` is used for food photos because it accepts image input through OpenCode Go. Text-only catalog entries remain selectable for text meals, but the bot will clearly reject a photo while one is selected. This design does **not** claim one key works directly across OpenAI, xAI, and Google; cross-provider routing must be provided by the configured gateway.
+Routing is automatic and hidden from the Telegram UI: `mimo-v2.5` handles compressed photos and direct audio input, while `mimo-v2.5-pro` handles text extraction, corrections, and nutrition calculation. This design does **not** claim one key works directly across OpenAI, xAI, and Google; cross-provider routing must be provided by the configured gateway.
 
 Catalog entries use `model|text+image`, `model|text`, or `model|text+image+audio`. Users can only select catalog models. A selected text-only model is never silently replaced for a photo; the bot asks the user to select a multimodal model.
 

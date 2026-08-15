@@ -20,10 +20,13 @@ class FakeAdapter:
     async def transcribe(self,model,audio):
         from banana_bot.domain import TextResult
         return TextResult(text="rice 120 g",provider="fake",model=model)
+    async def understand_audio(self,model,audio):
+        from banana_bot.domain import TextResult
+        return TextResult(text="rice 120 g",provider="fake",model=model)
 
 class FoodTests(unittest.IsolatedAsyncioTestCase):
     def make(self,responses,extra=None):
-        env={"TELEGRAM_BOT_TOKEN":"t","AI_API_KEY":"k","AI_BASE_URL":"https://gateway/v1","AI_VISION_MODEL":"vision","AI_TEXT_MODEL":"vision","AI_MODEL_CATALOG":"vision|text+image,text-only|text",**(extra or {})}
+        env={"TELEGRAM_BOT_TOKEN":"t","AI_API_KEY":"k","AI_BASE_URL":"https://gateway/v1","AI_VISION_MODEL":"vision","AI_TEXT_MODEL":"vision","AI_TRANSCRIPTION_MODEL":"vision","AI_MODEL_CATALOG":"vision|text+image+audio,text-only|text",**(extra or {})}
         config=load_config(env,validate=True); adapter=FakeAdapter(responses); tmp=tempfile.NamedTemporaryFile(suffix=".sqlite",delete=False)
         return config,adapter,FoodAnalysisService(config,adapter,SQLiteDiaryRepository(tmp.name))
     async def test_photo_draft_has_no_nutrition_and_confirmation_calculates(self):
@@ -42,6 +45,10 @@ class FoodTests(unittest.IsolatedAsyncioTestCase):
         _,_,service=self.make([json.dumps(RECOGNITION),json.dumps(RECOGNITION)])
         text_draft=await service.recognize_text(1,"rice"); voice_draft=await service.recognize_text(1,"rice",source="voice")
         self.assertEqual(text_draft.detected_items,voice_draft.detected_items); self.assertEqual(voice_draft.source,"voice")
+    async def test_audio_uses_multimodal_model_without_transcription_endpoint(self):
+        _,adapter,service=self.make([])
+        result=await service.transcribe(b"ogg")
+        self.assertEqual(result.text,"rice 120 g")
     async def test_invalid_json_gets_one_repair_then_safe_error(self):
         _,adapter,service=self.make(["bad","still bad"])
         with self.assertRaises(InvalidModelResponse): await service.recognize_text(1,"rice")

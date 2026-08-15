@@ -20,9 +20,11 @@ services:
       - key: AI_VISION_MODEL
         value: mimo-v2.5
       - key: AI_TEXT_MODEL
+        value: mimo-v2.5-pro
+      - key: AI_TRANSCRIPTION_MODEL
         value: mimo-v2.5
       - key: AI_MODEL_CATALOG
-        value: mimo-v2.5|text+image,glm-5.2|text,kimi-k3|text
+        value: mimo-v2.5|text+image+audio,mimo-v2.5-pro|text
       - key: ALLOWED_USERS
         sync: false
       - key: ADMIN_USERS

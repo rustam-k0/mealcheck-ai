@@ -56,7 +56,7 @@ class FoodAnalysisService:
             clarifying_questions=result.clarifying_questions[:2], warnings=result.warnings)
 
     async def apply_correction(self, draft: MealDraft, correction: str, lang: str = "RU") -> MealDraft:
-        model = self._model(draft.selected_model, "text")
+        model = self._model(self.config.ai_text_model, "text")
         prompt = f"Update this meal using the user's correction. Do not calculate nutrition. Current: {draft.model_dump_json()}. Correction: {correction}. Language: {lang}."
         result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, prompt, RECOGNITION_SCHEMA, RecognitionResult)
         return self._draft(draft.user_id, draft.source, model, result, draft.image_file_id)
@@ -64,7 +64,7 @@ class FoodAnalysisService:
     async def calculate_confirmed_meal(self, draft: MealDraft) -> NutritionEstimate:
         if draft.status != DraftStatus.confirmed:
             raise ValueError("Nutrition can only be calculated for a confirmed meal draft")
-        model = self._model(draft.selected_model, "text")
+        model = self._model(self.config.ai_text_model, "text")
         prompt = "Confirmed items (do not change): " + json.dumps([x.model_dump() for x in draft.detected_items], ensure_ascii=False)
         return await self._structured(model, CALCULATION_SYSTEM_PROMPT, prompt, NUTRITION_SCHEMA, NutritionEstimate)
 
@@ -79,4 +79,5 @@ class FoodAnalysisService:
     async def transcribe(self, audio: bytes) -> TextResult:
         if not self.config.ai_transcription_model:
             raise ProviderError(501, "Audio transcription is not configured", "transcription_unavailable")
-        return await self.transcription_adapter.transcribe(self.config.ai_transcription_model, audio)
+        model = self._model(self.config.ai_transcription_model, "audio")
+        return await self.transcription_adapter.understand_audio(model, audio)

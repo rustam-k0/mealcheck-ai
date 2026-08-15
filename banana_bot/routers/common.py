@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, Message
 from banana_bot.config import AppConfig
 from banana_bot.diary import DiaryRepository
 from banana_bot.i18n import TEXTS, button_values, text
-from banana_bot.keyboards import language_keyboard, main_keyboard, model_keyboard, settings_keyboard, yes_no_keyboard
+from banana_bot.keyboards import diary_manage_keyboard, language_keyboard, main_keyboard, model_keyboard, settings_keyboard, yes_no_keyboard
 from banana_bot.memory import ConversationMemory
 from banana_bot.states import BotStates
 
@@ -31,10 +31,12 @@ def build_common_router(config: AppConfig, memory: ConversationMemory, diary: Di
         data=await state.get_data(); memory.clear(message.from_user.id); await state.clear(); await state.update_data(lang=data.get("lang","EN"),selected_model=data.get("selected_model",config.ai_vision_model))
         await message.answer(text(data.get("lang","EN"),"NEW_DIALOG"),reply_markup=main_keyboard(data.get("lang","EN")))
     @router.message(F.text.in_(button_values("BTN_ADD")))
-    async def add(message:Message,state:FSMContext): await message.answer(text((await state.get_data()).get("lang","EN"),"ADD_PROMPT"))
+    async def add(message:Message,state:FSMContext):
+        data=await state.get_data(); lang=data.get("lang","EN"); await state.clear(); await state.update_data(lang=lang,selected_model=config.ai_vision_model)
+        await message.answer(text(lang,"ADD_PROMPT"),reply_markup=main_keyboard(lang))
     @router.message(F.text.in_(button_values("BTN_SETTINGS")))
     async def settings(message:Message,state:FSMContext):
-        data=await state.get_data(); lang=data.get("lang","EN"); await state.set_state(BotStates.settings); await message.answer(text(lang,"SETTINGS_TEXT",model=data.get("selected_model",config.ai_vision_model)),reply_markup=settings_keyboard(lang))
+        data=await state.get_data(); lang=data.get("lang","EN"); await state.set_state(BotStates.settings); await message.answer(text(lang,"SETTINGS_TEXT"),reply_markup=settings_keyboard(lang))
     @router.message(F.text.in_(button_values("BTN_MODEL")))
     async def models(message:Message,state:FSMContext):
         lang=(await state.get_data()).get("lang","EN"); names=tuple(x.name for x in config.model_catalog); await message.answer(text(lang,"MODEL_PROMPT"),reply_markup=model_keyboard(names))
@@ -48,7 +50,14 @@ def build_common_router(config: AppConfig, memory: ConversationMemory, diary: Di
     async def today(message:Message,state:FSMContext):
         lang=(await state.get_data()).get("lang","EN"); entries=diary.today(message.from_user.id)
         if not entries: await message.answer(text(lang,"TODAY_EMPTY")); return
-        await message.answer(text(lang,"TODAY",count=len(entries),kcal=sum(x.total_kcal for x in entries),protein=sum(x.protein_g for x in entries),fat=sum(x.fat_g for x in entries),carbs=sum(x.carbs_g for x in entries)))
+        await message.answer(text(lang,"TODAY",count=len(entries),kcal=sum(x.total_kcal for x in entries),protein=sum(x.protein_g for x in entries),fat=sum(x.fat_g for x in entries),carbs=sum(x.carbs_g for x in entries)),reply_markup=diary_manage_keyboard(lang))
+    @router.callback_query(F.data.in_({"manage:edit","manage:delete"}))
+    async def manage_last(callback:CallbackQuery,state:FSMContext):
+        lang=(await state.get_data()).get("lang","EN"); await callback.answer()
+        if not diary.last(callback.from_user.id): await callback.message.answer(text(lang,"NO_LAST")); return
+        action="edit" if callback.data.endswith("edit") else "delete"
+        await state.set_state(BotStates.awaiting_edit_confirmation if action=="edit" else BotStates.awaiting_delete_confirmation)
+        await callback.message.answer(text(lang,"CONFIRM_EDIT" if action=="edit" else "CONFIRM_DELETE"),reply_markup=yes_no_keyboard(action,lang))
     @router.message(F.text.in_(button_values("BTN_DELETE_LAST")))
     async def delete_last(message:Message,state:FSMContext):
         lang=(await state.get_data()).get("lang","EN")

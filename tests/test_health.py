@@ -12,7 +12,7 @@ class HealthcheckTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.text)
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["service"], "banana-bot")
+        self.assertEqual(payload["service"], "bitemate")
 
 
 if __name__ == "__main__":

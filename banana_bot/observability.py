@@ -48,7 +48,7 @@ class Metrics:
 
     def render(self) -> str:
         lines = [
-            "📊 Banana Mate",
+            "📊 BiteMate",
             f"Uptime: {int(time.time() - self.started_at)}s",
             f"Active users: {len(self.users)}",
             f"Requests: {sum(item.calls for item in self.models.values())}",

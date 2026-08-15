@@ -27,7 +27,7 @@ from banana_bot import __version__
 
 
 async def healthcheck(_request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "service": "banana-bot", "version": __version__})
+    return web.json_response({"status": "ok", "service": "bitemate", "version": __version__})
 
 
 async def start_health_server(port: int) -> web.AppRunner:
