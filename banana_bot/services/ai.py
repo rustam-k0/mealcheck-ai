@@ -8,6 +8,7 @@ from banana_bot.config import AppConfig, ConfigError
 from banana_bot.diary import DiaryRepository
 from banana_bot.domain import DiaryEntry, DraftStatus, MealDraft, NutritionEstimate, NutritionTotal, RecognitionResult, TextResult
 from banana_bot.http import ProviderError
+from banana_bot.observability import log_event, log_exception
 from banana_bot.services.prompts import CALCULATION_SYSTEM_PROMPT, NUTRITION_SCHEMA, RECOGNITION_SCHEMA, RECOGNITION_SYSTEM_PROMPT
 
 
@@ -32,21 +33,36 @@ class FoodAnalysisService:
         for attempt in range(2):
             try:
                 return target.model_validate_json(result.text)
-            except (ValidationError, ValueError, json.JSONDecodeError):
+            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
                 if attempt:
+                    log_exception("nutrition_parse_failed" if target is NutritionEstimate else "food_detection_failed", exc, model=model)
                     raise InvalidModelResponse()
                 result = await self.adapter.complete(model, "Repair JSON. Return only valid JSON matching the schema; do not add facts.", f"Schema: {schema}\nInvalid response: {result.text}", max_tokens=self.config.max_output_tokens, response_schema=response_schema)
         raise InvalidModelResponse()
 
     async def recognize_photo(self, user_id: int, image: bytes, image_file_id: str, selected_model: str | None = None, lang: str = "RU") -> MealDraft:
-        model = self._model(selected_model, "image")
-        result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Фото еды. Язык: {lang}.", RECOGNITION_SCHEMA, RecognitionResult, image)
-        return self._draft(user_id, "photo", model, result, image_file_id)
+        log_event("food_detection_started", source="photo", user_id=user_id)
+        try:
+            model = self._model(selected_model, "image")
+            result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Фото еды. Язык: {lang}.", RECOGNITION_SCHEMA, RecognitionResult, image)
+            draft = self._draft(user_id, "photo", model, result, image_file_id)
+            log_event("food_detection_success", source="photo", user_id=user_id, item_count=len(draft.detected_items))
+            return draft
+        except Exception as exc:
+            log_exception("food_detection_failed", exc, source="photo", user_id=user_id)
+            raise
 
     async def recognize_text(self, user_id: int, value: str, selected_model: str | None = None, lang: str = "RU", source: str = "text") -> MealDraft:
-        model = self._model(selected_model, "text")
-        result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Язык: {lang}. Еда: {value}", RECOGNITION_SCHEMA, RecognitionResult)
-        return self._draft(user_id, source, model, result)
+        log_event("food_detection_started", source=source, user_id=user_id)
+        try:
+            model = self._model(selected_model, "text")
+            result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, f"Язык: {lang}. Еда: {value}", RECOGNITION_SCHEMA, RecognitionResult)
+            draft = self._draft(user_id, source, model, result)
+            log_event("food_detection_success", source=source, user_id=user_id, item_count=len(draft.detected_items))
+            return draft
+        except Exception as exc:
+            log_exception("food_detection_failed", exc, source=source, user_id=user_id)
+            raise
 
     @staticmethod
     def _draft(user_id: int, source: str, model: str, result: RecognitionResult, image_file_id: str | None = None, interaction_id: str | None = None) -> MealDraft:
@@ -64,6 +80,8 @@ class FoodAnalysisService:
     async def calculate_confirmed_meal(self, draft: MealDraft) -> NutritionEstimate:
         if draft.status != DraftStatus.confirmed:
             raise ValueError("Nutrition can only be calculated for a confirmed meal draft")
+        log_event("nutrition_analysis_started", user_id=draft.user_id, item_count=len(draft.detected_items))
+        log_event("safety_check_passed", stage="nutrition", reason="confirmed_structured_meal")
         model = self._model(self.config.ai_text_model, "text")
         prompt = "Confirmed items (do not change): " + json.dumps([x.model_dump() for x in draft.detected_items], ensure_ascii=False)
         fallback = self.config.ai_vision_model
@@ -82,7 +100,9 @@ class FoodAnalysisService:
                     NutritionEstimate, strict_output=strict_output,
                 )
                 break
-            except ProviderError:
+            except ProviderError as exc:
+                if exc.safety_related:
+                    log_event("safety_check_failed", stage="provider", reason=exc.code or "provider_policy")
                 if index == len(attempts) - 1:
                     raise
         # The item estimates come from the model; make the displayed total deterministic.
@@ -92,7 +112,9 @@ class FoodAnalysisService:
             fat_g=sum(item.fat_g for item in estimate.items),
             carbs_g=sum(item.carbs_g for item in estimate.items),
         )
-        return estimate.model_copy(update={"total": total})
+        result = estimate.model_copy(update={"total": total})
+        log_event("nutrition_analysis_success", user_id=draft.user_id, item_count=len(result.items))
+        return result
 
     def save_to_diary(self, draft: MealDraft, estimate: NutritionEstimate) -> DiaryEntry:
         if draft.status not in {DraftStatus.confirmed, DraftStatus.calculated}:

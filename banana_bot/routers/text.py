@@ -8,10 +8,10 @@ from banana_bot.formatting import telegram_html
 from banana_bot.http import ProviderError
 from banana_bot.i18n import button_values, text
 from banana_bot.keyboards import confirmation_keyboard, diary_keyboard, main_keyboard
-from banana_bot.services.ai import FoodAnalysisService
+from banana_bot.services.ai import FoodAnalysisService, InvalidModelResponse
 from banana_bot.services.safety import safety_reply
 from banana_bot.states import BotStates
-from banana_bot.observability import log_event
+from banana_bot.observability import log_event, log_exception
 
 def _draft_text(draft:MealDraft,lang:str)->str:
     units={"RU":{"g":"г","ml":"мл","piece":"шт.","portion":"порц."},"EN":{"g":"g","ml":"ml","piece":"pc","portion":"serving"}}
@@ -37,7 +37,7 @@ def build_text_router(service:FoodAnalysisService)->Router:
     async def correction(message:Message,state:FSMContext):
         data=await state.get_data(); lang=data.get("lang","EN"); status=await message.answer(text(lang,"PROCESSING"))
         try: draft=await service.apply_correction(MealDraft.model_validate_json(data["meal_draft"]),message.text,lang); await status.delete(); await show_draft(message,state,draft,lang)
-        except Exception: await status.edit_text(text(lang,"ERR"))
+        except Exception as exc: log_exception("food_detection_failed", exc, source="correction", user_id=message.from_user.id); await status.edit_text(text(lang,"ERR"))
     async def active_draft(callback:CallbackQuery,state:FSMContext)->MealDraft|None:
         data=await state.get_data(); raw=data.get("meal_draft")
         if not raw or callback.data.rsplit(":",1)[-1] != MealDraft.model_validate_json(raw).interaction_id:
@@ -56,13 +56,26 @@ def build_text_router(service:FoodAnalysisService)->Router:
     @router.callback_query(F.data.startswith("meal:confirm:"))
     async def confirm(callback:CallbackQuery,state:FSMContext):
         data=await state.get_data(); lang=data.get("lang","EN")
-        current=await active_draft(callback,state)
+        log_event("confirmation_received", user_id=callback.from_user.id)
+        try:
+            current=await active_draft(callback,state)
+        except (ValueError, KeyError) as exc:
+            log_exception("stored_detection_load_failed", exc, user_id=callback.from_user.id)
+            await callback.answer(); await callback.message.answer(text(lang,"ERR_STATE")); return
         if not current: return
+        log_event("stored_detection_loaded", user_id=callback.from_user.id, item_count=len(current.detected_items))
         await callback.answer(); status=await callback.message.answer(text(lang,"PROCESSING"))
         try:
             draft=current.model_copy(update={"status":DraftStatus.confirmed}); estimate=await service.calculate_confirmed_meal(draft); await status.delete(); await show_estimate(callback.message,state,draft,estimate,lang)
+        except InvalidModelResponse as exc:
+            log_exception("nutrition_parse_failed", exc, user_id=callback.from_user.id)
+            await status.edit_text(text(lang,"ERR_MODEL_RESPONSE"))
+        except ProviderError as exc:
+            event="safety_check_failed" if exc.safety_related else "nutrition_analysis_failed"
+            log_exception(event, exc, user_id=callback.from_user.id, reason=exc.code, status=exc.status)
+            await status.edit_text(text(lang,"ERR_SAFETY" if exc.safety_related else "ERR"))
         except Exception as exc:
-            log_event("meal_calculation_failed", error_type=type(exc).__name__, error_code=getattr(exc,"code",None), status=getattr(exc,"status",None))
+            log_exception("nutrition_analysis_failed", exc, user_id=callback.from_user.id)
             await status.edit_text(text(lang,"ERR"))
     @router.callback_query(F.data.startswith("diary:save:") | F.data.startswith("diary:skip:"))
     async def diary_action(callback:CallbackQuery,state:FSMContext):
@@ -78,7 +91,8 @@ def build_text_router(service:FoodAnalysisService)->Router:
     @router.message(F.text,~F.text.in_(excluded))
     async def food_text(message:Message,state:FSMContext):
         data=await state.get_data(); lang=data.get("lang","EN"); safe=safety_reply(message.text,lang)
-        if safe: await message.answer(safe); return
+        if safe: log_event("safety_check_failed", stage="raw_text", reason="risk_marker"); await message.answer(safe); return
+        log_event("safety_check_passed", stage="raw_text")
         status=await message.answer(text(lang,"PROCESSING"))
         try: draft=await service.recognize_text(message.from_user.id,message.text,service.config.ai_text_model,lang); await status.delete(); await show_draft(message,state,draft,lang)
         except (ProviderError,ConfigError): await status.edit_text(text(lang,"ERR"))

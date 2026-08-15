@@ -11,6 +11,7 @@ from banana_bot.routers.text import show_draft
 from banana_bot.services.ai import FoodAnalysisService
 from banana_bot.domain import MealDraft
 from banana_bot.states import BotStates
+from banana_bot.observability import log_exception
 
 async def _download(bot,file_id:str)->bytes:
     value=await bot.get_file(file_id); stream=await bot.download_file(value.file_path); return stream.read()
@@ -32,7 +33,7 @@ def build_media_router(service:FoodAnalysisService)->Router:
         status=await message.answer(text(lang,"PROCESSING"))
         try:
             image=_optimize_photo(await _download(bot,message.photo[-1].file_id)); draft=await service.recognize_photo(message.from_user.id,image,message.photo[-1].file_id,model,lang); await status.delete(); await show_draft(message,state,draft,lang)
-        except Exception: await status.edit_text(text(lang,"ERR"))
+        except Exception as exc: log_exception("food_detection_failed", exc, source="photo", user_id=message.from_user.id); await status.edit_text(text(lang,"ERR"))
     @router.message(F.voice)
     async def voice(message:Message,state:FSMContext,bot):
         data=await state.get_data(); lang=data.get("lang","EN")
@@ -48,7 +49,7 @@ def build_media_router(service:FoodAnalysisService)->Router:
             if not draft.detected_items: await message.answer(text(lang,"BAD_VOICE")); return
             await show_draft(message,state,draft,lang)
         except ProviderError as exc: await status.edit_text(text(lang,"NO_TRANSCRIPTION" if exc.code=="transcription_unavailable" else "BAD_VOICE"))
-        except Exception: await status.edit_text(text(lang,"BAD_VOICE"))
+        except Exception as exc: log_exception("food_detection_failed", exc, source="voice", user_id=message.from_user.id); await status.edit_text(text(lang,"BAD_VOICE"))
     @router.message()
     async def unsupported(message:Message,state:FSMContext): await message.answer(text((await state.get_data()).get("lang","EN"),"ADD_PROMPT"))
     return router

@@ -17,6 +17,14 @@ def log_event(event: str, **fields: Any) -> None:
     logger.info(json.dumps({"event": event, **safe}, ensure_ascii=False, default=str))
 
 
+def log_exception(event: str, exc: BaseException, **fields: Any) -> None:
+    """Log a classified event and retain the traceback without request contents."""
+    sensitive = {"prompt", "content", "request", "response", "token", "api_key", "photo", "image", "audio", "transcript", "transcription", "file", "headers", "authorization"}
+    safe = {key: value for key, value in fields.items() if key.lower() not in sensitive}
+    payload = {"event": event, "error_type": type(exc).__name__, **safe}
+    logger.exception(json.dumps(payload, ensure_ascii=False, default=str))
+
+
 @dataclass
 class ModelTotals:
     calls: int = 0
