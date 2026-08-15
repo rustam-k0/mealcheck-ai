@@ -1,0 +1,8 @@
+[Unit]
+Description=Deploy the latest BiteMate main branch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/banana-mate-auto-deploy

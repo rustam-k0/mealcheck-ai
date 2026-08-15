@@ -44,6 +44,8 @@ Telegram FSM stores structured unconfirmed `MealDraft` objects. With `REDIS_URL`
 
 Polling and webhook modes, `/healthz`, access control, rate limiting, safe structured logs, metrics, error handling, long-message helpers, and RU/EN UI remain. Logs intentionally exclude API keys, prompts, request contents, photo bytes, and transcriptions. Operators should still publish a privacy notice covering Telegram and their chosen AI gateway, retention, and deletion.
 
+On the production VPS, `banana-mate-deploy.timer` checks `origin/main` every minute, fast-forwards a clean checkout, updates dependencies when `requirements.txt` changes, and restarts the bot. Installation units and the deploy script live in `deploy/`.
+
 ## Architecture
 
 - `routers/`: Telegram interaction only
