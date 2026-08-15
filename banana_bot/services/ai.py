@@ -81,7 +81,6 @@ class FoodAnalysisService:
         if draft.status != DraftStatus.confirmed:
             raise ValueError("Nutrition can only be calculated for a confirmed meal draft")
         log_event("nutrition_analysis_started", user_id=draft.user_id, item_count=len(draft.detected_items))
-        log_event("safety_check_passed", stage="nutrition", reason="confirmed_structured_meal")
         model = self._model(self.config.ai_text_model, "text")
         prompt = "Confirmed items (do not change): " + json.dumps([x.model_dump() for x in draft.detected_items], ensure_ascii=False)
         fallback = self.config.ai_vision_model
@@ -100,9 +99,7 @@ class FoodAnalysisService:
                     NutritionEstimate, strict_output=strict_output,
                 )
                 break
-            except ProviderError as exc:
-                if exc.safety_related:
-                    log_event("safety_check_failed", stage="provider", reason=exc.code or "provider_policy")
+            except ProviderError:
                 if index == len(attempts) - 1:
                     raise
         # The item estimates come from the model; make the displayed total deterministic.

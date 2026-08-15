@@ -20,11 +20,6 @@ class ProviderError(RuntimeError):
     def retryable(self) -> bool:
         return self.status in {408, 409, 425, 429} or self.status >= 500
 
-    @property
-    def safety_related(self) -> bool:
-        return self.code in {"moderation_blocked", "content_policy_violation", "SAFETY"}
-
-
 class SlidingWindowRateLimiter:
     def __init__(self, requests_per_minute: int):
         self.limit = requests_per_minute
@@ -89,7 +84,7 @@ class AsyncHTTPClient:
                     return payload
             except ProviderError as exc:
                 last_error = exc
-                if exc.safety_related or not exc.retryable or attempt == self._retries:
+                if not exc.retryable or attempt == self._retries:
                     raise
             except (ClientError, TimeoutError, OSError) as exc:
                 last_error = exc
@@ -130,7 +125,7 @@ class AsyncHTTPClient:
                         message = error.get("message", "Provider audio request failed") if isinstance(error, dict) else str(error)
                         code = error.get("code") if isinstance(error, dict) else None
                         exc = ProviderError(response.status, message, code)
-                        if exc.safety_related or not exc.retryable or attempt == self._retries:
+                        if not exc.retryable or attempt == self._retries:
                             raise exc
                     else:
                         return await response.read()

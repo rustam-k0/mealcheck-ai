@@ -11,7 +11,6 @@ from banana_bot.config import ConfigError, load_config
 from banana_bot.diary import SQLiteDiaryRepository
 from banana_bot.domain import DraftStatus, MealDraft, NutritionEstimate
 from banana_bot.services.ai import FoodAnalysisService, InvalidModelResponse
-from banana_bot.services.safety import safety_reply
 from banana_bot.services.prompts import CALCULATION_SYSTEM_PROMPT, RECOGNITION_SYSTEM_PROMPT
 from banana_bot.routers.text import show_draft, show_estimate
 from banana_bot.states import BotStates
@@ -96,11 +95,10 @@ class FoodTests(unittest.IsolatedAsyncioTestCase):
         result=await service.transcribe(b"ogg","RU")
         self.assertEqual(result.text,"rice 120 g")
         self.assertEqual(adapter.audio_kwargs,{"language":"RU","context":None})
-    async def test_invalid_json_gets_one_repair_then_safe_error(self):
+    async def test_invalid_json_gets_one_repair_then_parse_error(self):
         _,adapter,service=self.make(["bad","still bad"])
         with self.assertRaises(InvalidModelResponse): await service.recognize_text(1,"rice")
         self.assertEqual(len(adapter.calls),2)
-        self.assertFalse(InvalidModelResponse().safety_related)
     async def test_catalog_and_image_capability_are_enforced(self):
         config,_,service=self.make([])
         with self.assertRaises(ConfigError): config.validate_model("unknown")
@@ -110,10 +108,6 @@ class FoodTests(unittest.IsolatedAsyncioTestCase):
         base=MealDraft(user_id=1,source="text",detected_items=RECOGNITION["items"],status=DraftStatus.confirmed,selected_model="vision")
         service.save_to_diary(base,estimate); service.save_to_diary(base.model_copy(update={"user_id":2}),estimate)
         self.assertEqual(len(service.diary.today(1)),1); self.assertEqual(len(service.diary.today(2)),1)
-    def test_risky_medical_request_is_safe(self): self.assertIn("врач",safety_reply("назначь лечебную диету","RU"))
-    def test_ordinary_nutrition_request_is_not_blocked_by_safety(self):
-        self.assertIsNone(safety_reply("натуральный йогурт примерно одна миска","RU"))
-
     async def test_draft_and_estimate_survive_confirmation_state_transition(self):
         storage=MemoryStorage(); state=FSMContext(storage=storage,key=StorageKey(bot_id=1,chat_id=1,user_id=1))
         message=AsyncMock()

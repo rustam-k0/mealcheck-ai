@@ -51,7 +51,6 @@ Polling and webhook modes, `/healthz`, access control, rate limiting, safe struc
 - `adapters/unified.py`: configurable OpenAI-compatible API
 - `domain.py`: validated food, draft, nutrition, and diary models
 - `diary.py`: repository interface and SQLite implementation
-- `services/safety.py`: medical/eating-disorder guardrails
 - `states.py`: explicit confirmation and diary states
 
 Run tests with `python -m pytest -q`. Tests use fake adapters and do not spend API credits.

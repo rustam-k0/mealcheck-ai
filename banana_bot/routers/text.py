@@ -9,7 +9,6 @@ from banana_bot.http import ProviderError
 from banana_bot.i18n import button_values, text
 from banana_bot.keyboards import confirmation_keyboard, diary_keyboard, main_keyboard
 from banana_bot.services.ai import FoodAnalysisService, InvalidModelResponse
-from banana_bot.services.safety import safety_reply
 from banana_bot.states import BotStates
 from banana_bot.observability import log_event, log_exception
 
@@ -71,9 +70,8 @@ def build_text_router(service:FoodAnalysisService)->Router:
             log_exception("nutrition_parse_failed", exc, user_id=callback.from_user.id)
             await status.edit_text(text(lang,"ERR_MODEL_RESPONSE"))
         except ProviderError as exc:
-            event="safety_check_failed" if exc.safety_related else "nutrition_analysis_failed"
-            log_exception(event, exc, user_id=callback.from_user.id, reason=exc.code, status=exc.status)
-            await status.edit_text(text(lang,"ERR_SAFETY" if exc.safety_related else "ERR"))
+            log_exception("nutrition_analysis_failed", exc, user_id=callback.from_user.id, reason=exc.code, status=exc.status)
+            await status.edit_text(text(lang,"ERR"))
         except Exception as exc:
             log_exception("nutrition_analysis_failed", exc, user_id=callback.from_user.id)
             await status.edit_text(text(lang,"ERR"))
@@ -90,9 +88,7 @@ def build_text_router(service:FoodAnalysisService)->Router:
         model=data.get("selected_model",service.config.ai_vision_model); await state.clear(); await state.update_data(lang=lang,selected_model=model)
     @router.message(F.text,~F.text.in_(excluded))
     async def food_text(message:Message,state:FSMContext):
-        data=await state.get_data(); lang=data.get("lang","EN"); safe=safety_reply(message.text,lang)
-        if safe: log_event("safety_check_failed", stage="raw_text", reason="risk_marker"); await message.answer(safe); return
-        log_event("safety_check_passed", stage="raw_text")
+        data=await state.get_data(); lang=data.get("lang","EN")
         status=await message.answer(text(lang,"PROCESSING"))
         try: draft=await service.recognize_text(message.from_user.id,message.text,service.config.ai_text_model,lang); await status.delete(); await show_draft(message,state,draft,lang)
         except (ProviderError,ConfigError): await status.edit_text(text(lang,"ERR"))
