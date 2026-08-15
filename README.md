@@ -4,7 +4,7 @@ A focused Telegram bot for approximate meal recognition from photos, text, and v
 
 ## Product flow
 
-Send a photo directly—no menu step is required—or describe a meal in text/voice. Banana Mate extracts a structured composition, asks up to two important clarification questions, and offers **Correct / Confirm / Cancel**. Confirmation starts a second structured AI call for an approximate itemized nutrition result, uncertainty range, and reasons. Saving to the diary is a separate explicit action.
+Send a photo directly—no menu step is required—or describe a meal in text/voice. Banana Mate extracts a structured composition and offers **Correct / Confirm / Cancel** without asking clarification questions. Confirmation starts a second structured AI call for an approximate itemized nutrition result, uncertainty range, and reasons. Saving to the diary is a separate explicit action.
 
 The bot does not diagnose, prescribe treatment or medical diets, moralize food, or support purging and extreme restriction. Photo estimates are inherently imprecise: exact weights, hidden oil, sauces, recipes, and cooking method can materially change the result.
 

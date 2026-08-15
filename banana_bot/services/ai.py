@@ -6,7 +6,7 @@ from pydantic import BaseModel, ValidationError
 from banana_bot.adapters.unified import UnifiedAIAdapter
 from banana_bot.config import AppConfig, ConfigError
 from banana_bot.diary import DiaryRepository
-from banana_bot.domain import DiaryEntry, DraftStatus, MealDraft, NutritionEstimate, RecognitionResult, TextResult
+from banana_bot.domain import DiaryEntry, DraftStatus, MealDraft, NutritionEstimate, NutritionTotal, RecognitionResult, TextResult
 from banana_bot.http import ProviderError
 from banana_bot.services.prompts import CALCULATION_SYSTEM_PROMPT, NUTRITION_SCHEMA, RECOGNITION_SCHEMA, RECOGNITION_SYSTEM_PROMPT
 
@@ -25,9 +25,9 @@ class FoodAnalysisService:
         self.config.validate_model(name, capability)
         return name
 
-    async def _structured(self, model: str, system: str, prompt: str, schema: str, target: type[BaseModel], image: bytes | None = None):
+    async def _structured(self, model: str, system: str, prompt: str, schema: str, target: type[BaseModel], image: bytes | None = None, *, strict_output: bool = True):
         request = f"{prompt}\nRequired JSON schema: {schema}"
-        response_schema = target.model_json_schema()
+        response_schema = target.model_json_schema() if strict_output else None
         result = await self.adapter.complete(model, system, request, image=image, max_tokens=self.config.max_output_tokens, response_schema=response_schema)
         for attempt in range(2):
             try:
@@ -49,24 +49,51 @@ class FoodAnalysisService:
         return self._draft(user_id, source, model, result)
 
     @staticmethod
-    def _draft(user_id: int, source: str, model: str, result: RecognitionResult, image_file_id: str | None = None) -> MealDraft:
-        return MealDraft(user_id=user_id, source=source, image_file_id=image_file_id, detected_items=result.items,
+    def _draft(user_id: int, source: str, model: str, result: RecognitionResult, image_file_id: str | None = None, interaction_id: str | None = None) -> MealDraft:
+        identity = {"interaction_id": interaction_id} if interaction_id else {}
+        return MealDraft(**identity, user_id=user_id, source=source, image_file_id=image_file_id, detected_items=result.items,
             portions=[f"{x.amount:g} {x.unit}" for x in result.items], preparation_notes=[x.preparation for x in result.items if x.preparation],
             confidence=result.overall_confidence, selected_model=model, missing_details=result.missing_details,
-            clarifying_questions=result.clarifying_questions[:2], warnings=result.warnings)
+            clarifying_questions=[], warnings=result.warnings)
 
     async def apply_correction(self, draft: MealDraft, correction: str, lang: str = "RU") -> MealDraft:
         model = self._model(self.config.ai_text_model, "text")
-        prompt = f"Update this meal using the user's correction. Do not calculate nutrition. Current: {draft.model_dump_json()}. Correction: {correction}. Language: {lang}."
+        prompt = f"Apply the user's correction to the CURRENT COMPLETE MEAL. Preserve every existing item and amount that the user did not explicitly change; add, remove, or replace only what the correction explicitly requests. Return the complete updated meal, never just the correction. Do not calculate nutrition. Current complete meal: {draft.model_dump_json()}. Correction: {correction}. Language: {lang}."
         result: RecognitionResult = await self._structured(model, RECOGNITION_SYSTEM_PROMPT, prompt, RECOGNITION_SCHEMA, RecognitionResult)
-        return self._draft(draft.user_id, draft.source, model, result, draft.image_file_id)
+        return self._draft(draft.user_id, draft.source, model, result, draft.image_file_id, draft.interaction_id)
 
     async def calculate_confirmed_meal(self, draft: MealDraft) -> NutritionEstimate:
         if draft.status != DraftStatus.confirmed:
             raise ValueError("Nutrition can only be calculated for a confirmed meal draft")
         model = self._model(self.config.ai_text_model, "text")
         prompt = "Confirmed items (do not change): " + json.dumps([x.model_dump() for x in draft.detected_items], ensure_ascii=False)
-        return await self._structured(model, CALCULATION_SYSTEM_PROMPT, prompt, NUTRITION_SCHEMA, NutritionEstimate)
+        fallback = self.config.ai_vision_model
+        if fallback != model:
+            self.config.validate_model(fallback, "text")
+        attempts = [(model, True)]
+        if fallback != model:
+            attempts.append((fallback, True))
+        # Some compatible gateways intermittently reject strict JSON Schema
+        # while still supporting ordinary JSON output for the same model.
+        attempts.append((fallback, False))
+        for index, (attempt_model, strict_output) in enumerate(attempts):
+            try:
+                estimate: NutritionEstimate = await self._structured(
+                    attempt_model, CALCULATION_SYSTEM_PROMPT, prompt, NUTRITION_SCHEMA,
+                    NutritionEstimate, strict_output=strict_output,
+                )
+                break
+            except ProviderError:
+                if index == len(attempts) - 1:
+                    raise
+        # The item estimates come from the model; make the displayed total deterministic.
+        total = NutritionTotal(
+            kcal=sum(item.kcal for item in estimate.items),
+            protein_g=sum(item.protein_g for item in estimate.items),
+            fat_g=sum(item.fat_g for item in estimate.items),
+            carbs_g=sum(item.carbs_g for item in estimate.items),
+        )
+        return estimate.model_copy(update={"total": total})
 
     def save_to_diary(self, draft: MealDraft, estimate: NutritionEstimate) -> DiaryEntry:
         if draft.status not in {DraftStatus.confirmed, DraftStatus.calculated}:
@@ -76,8 +103,8 @@ class FoodAnalysisService:
             total_kcal=total.kcal, protein_g=total.protein_g, fat_g=total.fat_g, carbs_g=total.carbs_g,
             uncertainty="; ".join(estimate.uncertainty_reasons), model=draft.selected_model))
 
-    async def transcribe(self, audio: bytes) -> TextResult:
+    async def transcribe(self, audio: bytes, lang: str = "RU", context: str | None = None) -> TextResult:
         if not self.config.ai_transcription_model:
             raise ProviderError(501, "Audio transcription is not configured", "transcription_unavailable")
         model = self._model(self.config.ai_transcription_model, "audio")
-        return await self.transcription_adapter.understand_audio(model, audio)
+        return await self.transcription_adapter.understand_audio(model, audio, language=lang, context=context)

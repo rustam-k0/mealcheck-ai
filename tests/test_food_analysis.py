@@ -8,7 +8,7 @@ from banana_bot.domain import DraftStatus, MealDraft, NutritionEstimate
 from banana_bot.services.ai import FoodAnalysisService, InvalidModelResponse
 from banana_bot.services.safety import safety_reply
 
-RECOGNITION={"items":[{"name":"Rice","amount":120,"unit":"g","preparation":None,"visible_evidence":"visible","confidence":.8}],"missing_details":[],"clarifying_questions":[],"overall_confidence":.8,"warnings":[]}
+RECOGNITION={"items":[{"name":"Rice","amount":120,"unit":"g","preparation":None,"visible_evidence":"visible","confidence":.8}],"missing_details":[],"overall_confidence":.8,"warnings":[]}
 NUTRITION={"items":[{"name":"Rice","confirmed_amount_g":120,"kcal":156,"protein_g":3,"fat_g":.4,"carbs_g":34,"confidence":.8}],"total":{"kcal":156,"protein_g":3,"fat_g":.4,"carbs_g":34},"estimated_error_percent":20,"uncertainty_reasons":["weight"]}
 
 class FakeAdapter:
@@ -20,7 +20,8 @@ class FakeAdapter:
     async def transcribe(self,model,audio):
         from banana_bot.domain import TextResult
         return TextResult(text="rice 120 g",provider="fake",model=model)
-    async def understand_audio(self,model,audio):
+    async def understand_audio(self,model,audio,**kwargs):
+        self.audio_kwargs=kwargs
         from banana_bot.domain import TextResult
         return TextResult(text="rice 120 g",provider="fake",model=model)
 
@@ -36,19 +37,45 @@ class FoodTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError): await service.calculate_confirmed_meal(draft)
         estimate=await service.calculate_confirmed_meal(draft.model_copy(update={"status":DraftStatus.confirmed}))
         self.assertEqual(estimate.total.kcal,156); self.assertEqual(len(adapter.calls),2)
+    async def test_nutrition_total_is_recalculated_from_all_items(self):
+        nutrition={**NUTRITION,"total":{"kcal":1,"protein_g":1,"fat_g":1,"carbs_g":1}}
+        _,_,service=self.make([json.dumps(nutrition)])
+        draft=MealDraft(user_id=1,source="text",detected_items=RECOGNITION["items"],confidence=.8,status=DraftStatus.confirmed,selected_model="vision")
+        estimate=await service.calculate_confirmed_meal(draft)
+        self.assertEqual(estimate.total.model_dump(),{"kcal":156.0,"protein_g":3.0,"fat_g":.4,"carbs_g":34.0})
+    async def test_calculation_falls_back_to_multimodal_model_after_invalid_text_response(self):
+        _,adapter,service=self.make(["bad","still bad",json.dumps(NUTRITION)],{"AI_TEXT_MODEL":"text-only"})
+        draft=MealDraft(user_id=1,source="photo",detected_items=RECOGNITION["items"],confidence=.8,status=DraftStatus.confirmed,selected_model="vision")
+        estimate=await service.calculate_confirmed_meal(draft)
+        self.assertEqual(estimate.total.kcal,156)
+        self.assertEqual([call[0] for call in adapter.calls],["text-only","text-only","vision"])
+    async def test_calculation_retries_without_strict_schema_when_only_model_fails(self):
+        _,adapter,service=self.make(["bad","still bad",json.dumps(NUTRITION)])
+        draft=MealDraft(user_id=1,source="photo",detected_items=RECOGNITION["items"],confidence=.8,status=DraftStatus.confirmed,selected_model="vision")
+        estimate=await service.calculate_confirmed_meal(draft)
+        self.assertEqual(estimate.total.kcal,156)
+        self.assertIsNone(adapter.calls[-1][3]["response_schema"])
+    async def test_recognition_contract_has_no_clarifying_questions(self):
+        _,adapter,service=self.make([json.dumps(RECOGNITION)])
+        draft=await service.recognize_photo(1,b"photo","file")
+        self.assertEqual(draft.clarifying_questions,[])
+        response_schema=adapter.calls[0][3]["response_schema"]
+        self.assertNotIn("clarifying_questions",response_schema["properties"])
     async def test_correction_replaces_draft_and_needs_confirmation(self):
         changed={**RECOGNITION,"items":[{**RECOGNITION["items"][0],"amount":90}]}
         _,_,service=self.make([json.dumps(RECOGNITION),json.dumps(changed)])
         draft=await service.recognize_text(1,"rice"); updated=await service.apply_correction(draft,"90 g")
         self.assertEqual(updated.detected_items[0].amount,90); self.assertEqual(updated.status,DraftStatus.awaiting_confirmation)
+        self.assertEqual(updated.interaction_id,draft.interaction_id)
     async def test_text_and_voice_share_recognize_text_pipeline(self):
         _,_,service=self.make([json.dumps(RECOGNITION),json.dumps(RECOGNITION)])
         text_draft=await service.recognize_text(1,"rice"); voice_draft=await service.recognize_text(1,"rice",source="voice")
         self.assertEqual(text_draft.detected_items,voice_draft.detected_items); self.assertEqual(voice_draft.source,"voice")
     async def test_audio_uses_multimodal_model_without_transcription_endpoint(self):
         _,adapter,service=self.make([])
-        result=await service.transcribe(b"ogg")
+        result=await service.transcribe(b"ogg","RU")
         self.assertEqual(result.text,"rice 120 g")
+        self.assertEqual(adapter.audio_kwargs,{"language":"RU","context":None})
     async def test_invalid_json_gets_one_repair_then_safe_error(self):
         _,adapter,service=self.make(["bad","still bad"])
         with self.assertRaises(InvalidModelResponse): await service.recognize_text(1,"rice")

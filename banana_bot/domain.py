@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from uuid import uuid4
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DraftStatus(str, Enum):
@@ -25,17 +26,12 @@ class RecognitionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     items: list[FoodItem]
     missing_details: list[str]
-    clarifying_questions: list[str] = Field(max_length=2)
     overall_confidence: float = Field(ge=0, le=1)
     warnings: list[str]
 
 
-class VoiceRecognitionResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    transcript: str = Field(min_length=1)
-
-
 class MealDraft(BaseModel):
+    interaction_id: str = Field(default_factory=lambda: uuid4().hex[:10], pattern=r"^[a-f0-9]{10}$")
     user_id: int
     source: str = Field(pattern=r"^(photo|text|voice)$")
     image_file_id: str | None = None

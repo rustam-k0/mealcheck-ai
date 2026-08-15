@@ -12,5 +12,5 @@ def safety_reply(value: str, lang: str) -> str | None:
     if not any(marker in lowered for marker in RISK_MARKERS.get(lang, RISK_MARKERS["EN"])):
         return None
     if lang == "RU":
-        return "Мне жаль, что вам приходится с этим сталкиваться. Я могу помочь только с нейтральной ориентировочной оценкой еды, но не с диагнозом, лечебной диетой или опасной компенсацией. Пожалуйста, обсудите это с врачом или профильным специалистом; если есть непосредственная опасность — обратитесь в экстренную службу."
-    return "I'm sorry you're dealing with this. I can only provide a neutral approximate food estimate, not a diagnosis, medical diet, or harmful compensation advice. Please speak with a doctor or qualified specialist; if there is immediate danger, contact emergency services."
+        return "С этим лучше поможет врач или профильный специалист. Я могу только посчитать еду 💛"
+    return "A doctor or qualified specialist can help with this. I can only estimate food 💛"

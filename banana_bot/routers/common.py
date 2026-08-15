@@ -23,7 +23,7 @@ def build_common_router(config: AppConfig, memory: ConversationMemory, diary: Di
     @router.message(BotStates.language,F.text.in_({"English 🇬🇧","Русский 🇷🇺"}))
     async def lang_selected(message:Message,state:FSMContext):
         lang="EN" if message.text.startswith("English") else "RU"; await state.set_state(None); await state.update_data(lang=lang,selected_model=config.ai_vision_model)
-        await message.answer(text(lang,"LANG_SET"),reply_markup=main_keyboard(lang)); await message.answer(text(lang,"WELCOME"),reply_markup=main_keyboard(lang))
+        await message.answer(text(lang,"WELCOME"),reply_markup=main_keyboard(lang))
     @router.message(BotStates.language)
     async def bad_lang(message:Message): await message.answer(TEXTS["EN"]["INVALID_LANG"]+" / "+TEXTS["RU"]["INVALID_LANG"],reply_markup=language_keyboard())
     @router.message(F.text.in_(button_values("BTN_NEW")))

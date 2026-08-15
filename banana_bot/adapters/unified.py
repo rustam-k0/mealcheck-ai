@@ -44,9 +44,11 @@ class UnifiedAIAdapter:
             raise ProviderError(502, "Gateway returned no text")
         return TextResult(text=value, provider=self.provider, model=model)
 
-    async def transcribe(self, model: str, audio: bytes) -> TextResult:
+    async def transcribe(self, model: str, audio: bytes, language: str | None = None) -> TextResult:
         def form() -> FormData:
             value = FormData(); value.add_field("model", model); value.add_field("response_format", "json")
+            if language:
+                value.add_field("language", language.lower())
             value.add_field("file", audio, filename="voice.ogg", content_type="audio/ogg"); return value
         payload = await self.client.request_json("POST", f"{self.base_url}/audio/transcriptions", headers=self.headers, data_factory=form)
         value = payload.get("text", "").strip()
@@ -54,13 +56,15 @@ class UnifiedAIAdapter:
             raise ProviderError(502, "Transcription returned no text")
         return TextResult(text=value, provider=self.provider, model=model)
 
-    async def understand_audio(self, model: str, audio: bytes, mime_type: str = "audio/ogg") -> TextResult:
+    async def understand_audio(self, model: str, audio: bytes, mime_type: str = "audio/ogg", language: str = "RU", context: str | None = None) -> TextResult:
         encoded = base64.b64encode(audio).decode("ascii")
+        language_name = "Russian" if language.upper() == "RU" else "English"
+        context_hint = f" Context: this is a correction to a meal containing {context}." if context else ""
         payload = await self.client.request_json("POST", f"{self.base_url}/chat/completions", headers=self.headers, json={
             "model": model,
-            "messages": [{"role": "system", "content": "Transcribe the speech accurately. Return only the spoken words, without commentary."}, {
+            "messages": [{"role": "system", "content": f"Transcribe speech accurately in {language_name}. Preserve the spoken language and use its native alphabet. Do not translate or guess another language. Return only the spoken words, without commentary."}, {
                 "role": "user", "content": [{"type": "input_audio", "input_audio": {"data": f"data:{mime_type};base64,{encoded}"}},
-                                              {"type": "text", "text": "Transcribe this voice message."}]}],
+                                              {"type": "text", "text": f"Transcribe this {language_name} voice message in {language_name}.{context_hint}"}]}],
             "max_tokens": 700, "thinking": {"type": "disabled"},
         })
         value = self._text(payload).strip()
